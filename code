@@ -1,0 +1,242 @@
+import time
+import pyautogui
+import pytesseract
+import pygetwindow as gw
+import gc
+import requests
+import sys
+START_TIME = time.time()
+MAX_RUNTIME = 1.5 * 60 * 60  # 1.5 часа в секундах
+
+def check_runtime():
+    """Проверяет, не превышено ли максимальное время работы"""
+    elapsed = time.time() - START_TIME
+    return elapsed >= MAX_RUNTIME
+windows = gw.getWindowsWithTitle("STALCRAFT")
+weq = gw.getWindowsWithTitle('PyCharmMiscProject – test.py')
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+
+def similarity_score(str1, str2):
+    """Вычисляет схожесть двух строк (0-1)"""
+    if not str1 or not str2:
+        return 0
+
+    str1, str2 = str1.lower(), str2.lower()
+
+    # Простой расчет схожести
+    matches = sum(1 for a, b in zip(str1, str2) if a == b)
+    max_len = max(len(str1), len(str2))
+
+    return matches / max_len if max_len > 0 else 0
+
+def click_at(x, y):
+    try:
+        pyautogui.moveTo(x, y)
+        pyautogui.click()
+        time.sleep(0.1)
+    except Exception as e:
+        return e
+
+
+def capture_and_recognize1(x1, y1, x2, y2):
+    try:
+        screenshot1 = pyautogui.screenshot(region=(x1, y1, x2 - x1, y2 - y1))
+        config = '--psm 6 -c tessedit_char_blacklist=©®™§-©!?/.,_-=+*&^%$#@!'
+        text1 = pytesseract.image_to_string(screenshot1, lang='rus', config=config).lower()
+        del screenshot1
+        return [line for line in text1.splitlines()
+                if line.strip() and 'осталось' not in line and 'остелось' not in line]
+    except Exception as e:
+        return e
+
+
+def capture_and_recognize_price(x1, y1, x2, y2):
+    """Функция для распознавания цены"""
+    try:
+        screenshot = pyautogui.screenshot(region=(x1, y1, x2 - x1, y2 - y1))
+        config = '--psm 6 -c tessedit_char_whitelist=0123456789'
+        text = pytesseract.image_to_string(screenshot, lang='rus', config=config)
+        del screenshot
+
+        # Очистка текста - оставляем только цифры
+        cleaned_text = ''.join(filter(str.isdigit, text))
+        return cleaned_text
+    except Exception as e:
+        return str(e)
+
+
+webhook_url = "ваш веб хук"
+discord_avatar_url = "ссылка url на картинку"
+bot_name = 'название бота'
+
+
+def discord_push(message):
+    data = {
+        "content": message,
+        "username": bot_name,
+        "avatar_url": discord_avatar_url
+    }
+    try:
+        response = requests.post(
+            webhook_url,
+            json=data,
+            timeout=5
+        )
+        if response.status_code == 204:
+            return True
+        else:
+            return False
+    except Exception as e:
+        return e
+
+
+def clean_text(text, is_price=False):
+    if not text:
+        return text
+
+    chars_to_remove = ' "\'.:()«»<>/\\©|' if not is_price else ' рубльрублярублей:'
+    translator = str.maketrans('', '', chars_to_remove)
+    return text.translate(translator)
+
+
+def buy_item(slot_number, item_name, item_price):
+    buy_coordinates = [(1295, 408), (1295, 448), (1295, 483), (1295, 520), (1295, 557),
+                       (1295, 595), (1295, 634), (1295, 669), (1326, 706)]
+    buy_coordinates2 = [(1326, 446), (1326, 486), (1326, 522), (1326, 556), (1326, 590),
+                        (1326, 635), (1326, 668), (1326, 709), (1326, 741)]
+    price_coordinates = [
+        (1250, 390, 1384, 426),  # 0
+        (1250, 430, 1384, 466),  # 1
+        (1250, 467, 1384, 502),  # 2
+        (1250, 504, 1384, 539),  # 3
+        (1250, 541, 1384, 575),  # 4
+        (1250, 578, 1384, 611),  # 5
+        (1250, 615, 1384, 653),  # 6
+        (1250, 652, 1384, 687),  # 7
+        (1250, 689, 1384, 724), ]  # 8
+    names_coordinates = [
+        (925, 390, 1130, 408),  # 0
+        (925, 430, 1130, 446),  # 1
+        (925, 467, 1130, 482),  # 2
+        (925, 504, 1130, 519),  # 3
+        (925, 540, 1130, 557),  # 4
+        (925, 578, 1130, 593),  # 5
+        (925, 614, 1130, 631),  # 6
+        (925, 651, 1130, 668),  # 7
+        (925, 690, 1130, 705), ]  # 8
+
+    x1, y1, x2, y2 = price_coordinates[slot_number]
+    recognized_price = capture_and_recognize_price(x1, y1, x2, y2)
+
+    x1, y1, x2, y2 = names_coordinates[slot_number]
+    recognized_name_list = capture_and_recognize1(x1, y1, x2, y2)
+    # Преобразуем список в строку для сравнения
+    recognized_name = clean_text(recognized_name_list[0]) if recognized_name_list else ""
+
+    # Проверяем цену (должна точно совпадать)
+    price_matches = (recognized_price and recognized_price == item_price.replace(' ', ''))
+
+    # Проверяем название с допуском на ошибки распознавания
+    similarity = similarity_score(recognized_name, item_name)
+    name_matches = similarity > 0.85  # 70% схожести достаточно
+
+    if price_matches and name_matches:
+        buy_x, buy_y = buy_coordinates[slot_number]
+        buy_x2, buy_y2 = buy_coordinates2[slot_number]
+        click_at(buy_x, buy_y)
+        click_at(buy_x2, buy_y2)
+        time.sleep(1)
+        click_at(961, 585)
+        return item_name, recognized_price, item_price
+    else:
+        return None, None, None
+
+
+prices = { #чтобы узнать название товара и занести в базу, в 190 строке посмотрите результат работы очищенния строк с помощью print('full_clean1'), после чего занесите значение в базу по типу: (название: цена)
+    'продвинутыезапчасти': 36500, 'продвинутыеинструменты': 39000,
+    'стандартныезапчасти': 14500, 'загадочнаядобыча': 40000, 'стандартныеинструменты': 14500,
+    'дешевыезапчасти': 8000, 'портативныйквантовыйгенера': 42000, 'мультитул': 4000,
+    'сывороткаизменения': 110000, 'очищенноевещество07270': 12000,
+    'псимаячок': 12000, 'наборкомпонентоворужияма': 31000, 'наборкомпонентоворужияве': 31000,
+    'спираль': 22000, 'армейскийаккумулятор': 15000, 'старыйскарб': 30000, 'боевойнабор': 170000,
+    'катализатор': 4000, 'протоартефакт': 2897,
+    'барабанныймагазин545': 1750000, 'янтарнаяполынь': 10111, 'контейнеркега': 150001,
+    'нестабильнаяаномальнаябата': 38000, 'цветущийсеверныймох': 18000,
+    'аммиак': 11111, 'блокданныхгамма': 35000, 'тактическийзапас': 64000, 'каменьжмыхвжухплюх': 40000,
+    'темныйлимб': 115000, 'расцветшийгорьколистник': 70000, 'эссенциясброса': 3250001,
+    'даршепота': 55000, 'ак308': 11000000, 'детекторузкогодиапазонаэл': 20000000, 'алюминиеваябита': 45000,
+    'оц14мураган': 250000, 'м249бау': 500000, 'отечественныйсамодельныйко': 230000, 'самодельныйлцу': 320000, 'дтквихрь': 150000,
+    'задакоттапдо': 650000, 'згдчкоттапао': 700000, 'заочкоттапао': 700000, 'свпеугасмзоо': 7000000, 'самодельнаяскошеннаярукоят': 600000,
+    'спеуйасмзоо': 7500000, 'ц62': 150000, 'оегуамк12а': 4500000, 'эргономичныймагазин762х39': 500000, 'прицелколлиматорныйпко1т': 120000,
+    'оегуамк12а51035': 5000000, 'м48тотааик': 150000, 'ма8тотайам': 150000, 'м48тотайамк': 125000,
+    'ма8тотайамк': 150000,
+    'премиумна1день': 1000000, 'премиумна30дней': 2400000, 'премиумна180дней': 9000000,
+    'бронескелетальбатросперех': 13000000, 'экзоброняальбатросразведч': 3550000, 'экзоброняальбатрослазутчи': 855000,
+    'бронекостюмкз4': 6000001, 'остаткиприборовшепота': 58000, 'блокданныхлямбда': 40000, 'ключотнаучногосейфа': 190000,
+    'увеличенныймагазинак308': 200000, 'фильтр': 3500, 'дорогиесигареты': 2500, 'комбинезонмагнит': 110000, 'нка17': 2800000, 'нкмр7а2': 17000000
+}
+
+def main():
+    result = []
+    time.sleep(0.05)
+    click_at(1333, 347)
+    time.sleep(0.05)
+    result1 = capture_and_recognize1(925, 390, 1130, 724)
+    result2 = capture_and_recognize1(1247, 390, 1383, 724)
+    time.sleep(0.35)
+    full_clean1 = [clean_text(item) for item in result1 if item.strip()]
+    full_clean2 = [clean_text(item, is_price=True) for item in result2 if item.strip()]
+    del result1, result2
+    if len(full_clean1) == len(full_clean2) == 9:
+        for i, (item, price_str) in enumerate(zip(full_clean1, full_clean2)):
+            try:
+                price_clean = price_str.replace(' ', '')
+                price = int(price_clean)
+                if item in prices and price <= prices[item]:
+                    result.append(i)
+            except ValueError:
+                continue
+    if result:
+        item_index = result[0]
+        item_name = full_clean1[item_index]
+        item_price = full_clean2[item_index].replace(' ', '')
+        bought_item, confirmation_text, buy_price = buy_item(item_index, item_name, item_price)
+        if bought_item:
+            message = f"🎉{bought_item}\nЦена: {buy_price} руб.\nПодтверждение: {confirmation_text}\n-------------------"
+        else:
+            message = f"❌ Ошибка при покупке: {item_name}"
+        discord_push(message)
+
+if windows:
+    windows[0].activate()
+    time.sleep(0.4)
+
+# Основной цикл
+# Основной цикл
+i = 0
+while True:
+    # Проверка времени работы
+    if check_runtime():
+        print("Время работы истекло (1.5 часа). Завершение программы.")
+        break
+    main()
+    # Очистка памяти каждые 10 циклов
+    i += 1
+    if i % 15 == 0:
+        n = capture_and_recognize1(1250, 806, 1342, 824)
+        time.sleep(0.2)
+        n[0] = n[0].replace(':', '').replace('т', '')
+        balance = int(n[0].replace(' ', ''))
+        del n
+        if balance <= 300000:
+            message = "завершаю работу, баланс <300k"
+            discord_push(message)
+            time.sleep(1)
+            sys.exit(0)
+        del balance
+        gc.collect()
+        elapsed = time.time() - START_TIME
+        remaining = MAX_RUNTIME - elapsed
+        hours = int(remaining // 9000)
+        minutes = int((remaining % 3600) // 60)
